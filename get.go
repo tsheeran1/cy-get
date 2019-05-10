@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -13,17 +14,14 @@ import (
 )
 
 type Event struct {
-	Gtype  string `json:"type"`
-	Age    int    `json:"age"`
-	Height int    `json:"height"`
-	Income int    `json:"income"`
+	AccessToken string `json:"accessToken"`
+	Gtype       string `json:"type"`
 }
 
 type Record struct {
-	Userid string `json:"Userid"`
-	Age    int    `json:"age"`
-	Height int    `json:"height"`
-	Income int    `json:"income"`
+	Age    int `json:"age"`
+	Height int `json:"height"`
+	Income int `json:"income"`
 }
 
 type Keystruct struct {
@@ -34,12 +32,17 @@ func handler(ctx context.Context, e Event) ([]Record, error) {
 
 	fmt.Println("Event:", e)
 	fmt.Println("Type: ", e.Gtype)
-	// Create the Dynamodb client -- common for all type options
+	// Create the config, session and Dynamodb client -- common for all type options
 	config := &aws.Config{
 		Region: aws.String("us-east-2"),
 	}
 	sess := session.Must(session.NewSession(config))
 	dbc := dynamodb.New(sess)
+	//create cognito service provider for this session
+	cisp := cognitoidentityprovider.New(sess)
+
+	accessToken := e.AccessToken
+	fmt.Printf("TOKEN: %v", accessToken)
 
 	if e.Gtype == "all" { //  GET ALL RECORDS
 		// "all" will use Scan method.
@@ -76,12 +79,26 @@ func handler(ctx context.Context, e Event) ([]Record, error) {
 		return data, nil
 
 	} else if e.Gtype == "single" {
+		// First need to create GetUserInput struct and then call cisp.GetUser to get the current user
 
+		getui := &cognitoidentityprovider.GetUserInput{
+			AccessToken: aws.String(accessToken),
+		}
+		getuo, err := cisp.GetUser(getui)
+		if err != nil {
+			fmt.Println(err)
+			return []Record{}, err
+		}
+		fmt.Println(getuo)
+		userID := getuo.UserAttributes[0].Value
+		// We have current user in userID.  Now need to set up keyvalyre and dynamodb structs
 		// "single will use GetItem method.
 		//  We will need a GetItemInput structure containing the filename and key."
 		// key will need to be marshalled into dynamodb attribute value
 		//Create keyvalue and marshal into dynamodb attribute value form
-		keyval := Keystruct{Userid: "dasf787af8safa"}
+		//userID := "28e09c22-f67a-4e34-bb22-51f3ddcf2da1"
+		keyval := Keystruct{Userid: *userID}
+
 		av, err := dynamodbattribute.MarshalMap(keyval)
 		if err != nil {
 			fmt.Println("Unable to marshal key structure")
@@ -99,23 +116,22 @@ func handler(ctx context.Context, e Event) ([]Record, error) {
 			return []Record{}, err
 		}
 		// gout.Item contains a map[string]*AttributeValue and needs to be dynamodb-unmarshalled
-
-		var r Record //record to unmarshal into
+		if gout.Item == nil { // there was no record found
+			err = fmt.Errorf("Record not found for user %s", *userID)
+			fmt.Println(err.Error())
+			return []Record{}, err
+		}
+		fmt.Println("GOUT:", gout) // otherwise we got a record
+		var r Record               //record to unmarshal into
 		err = dynamodbattribute.UnmarshalMap(gout.Item, &r)
 
 		fmt.Println(r)
 		rs := []Record{r}
-		//DONT MARSHAL out, err := json.Marshal(r)
-		// if err != nil {
-		// 	fmt.Println("error marshaling output to json")
-		// 	return []byte(), err
-		// }
-
-		//fmt.Println("OUT", string(out))
 		return rs, nil
+
 	} else if e.Gtype == "test" {
 
-		r := Record{"foo", 42, 24, 14}
+		r := Record{42, 24, 14}
 		// DONT MARSHAL out, err := json.Marshal(r)
 		// if err != nil {
 		// 	return []byte("test error marshalling json"), err
